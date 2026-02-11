@@ -1,0 +1,157 @@
+# Nanobot-Java 配置文件
+
+nanobot:
+  # Agent 配置
+  agents:
+    default-agent:
+      model: glm-4-flash  # 默认模型: glm-4-flash, glm-4-plus, glm-4-air
+      workspace: ${user.home}/.nanobot/workspace
+      max-iterations: 10
+      max-history: 50
+      temperature: 0.7
+
+  # Provider 配置
+  providers:
+    # 智谱 GLM
+    glm:
+      enabled: true
+      api-key: ${GLM_API_KEY:}
+      base-url: https://open.bigmodel.cn/api/paas/v4
+
+    # DeepSeek
+    deepseek:
+      enabled: true
+      api-key: ${DEEPSEEK_API_KEY:}
+      base-url: https://api.deepseek.com/v1
+
+    # 阿里云百炼 (Qwen)
+    qwen:
+      enabled: false
+      api-key: ${DASHSCOPE_API_KEY:}
+      base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+    # Moonshot (Kimi)
+    moonshot:
+      enabled: false
+      api-key: ${MOONSHOT_API_KEY:}
+      base-url: https://api.moonshot.cn/v1
+
+  # 频道配置
+  channels:
+    # 飞书
+    feishu:
+      enabled: false
+      app-id: ${FEISHU_APP_ID:}
+      app-secret: ${FEISHU_APP_SECRET:}
+      encrypt-key: ${FEISHU_ENCRYPT_KEY:}  # 可选
+      verification-token: ${FEISHU_VERIFICATION_TOKEN:}  # 可选
+      authorized-users: []  # 空列表表示允许所有用户
+
+    # 企业微信
+    wecom:
+      enabled: false
+      corp-id: ${WECOM_CORP_ID:}
+      agent-id: ${WECOM_AGENT_ID:}
+      secret: ${WECOM_SECRET:}
+      token: ${WECOM_TOKEN:}
+      authorized-users: []
+
+    # QQ
+    qq:
+      enabled: false
+      app-id: ${QQ_APP_ID:}
+      token: ${QQ_TOKEN:}
+      authorized-users: []
+
+    # 钉钉
+    dingtalk:
+      enabled: false
+      app-id: ${DINGTALK_APP_ID:}
+      app-secret: ${DINGTALK_APP_SECRET:}
+      authorized-users: []
+
+    # Telegram
+    telegram:
+      enabled: false
+      bot-token: ${TELEGRAM_BOT_TOKEN:}
+      allow-from: []  # 空 list 表示允许所有人
+
+  # 工具配置
+  tools:
+    restrict-to-workspace: true
+    workspace: ${user.home}/.nanobot/workspace
+
+    # 文件操作工具
+    file:
+      enabled: true
+      max-file-size: 1048576  # 1MB
+
+    # Shell 执行工具
+    shell:
+      enabled: true
+      timeout: 60  # 秒
+      blocked-commands:
+        - rm -rf
+        - format
+        - dd
+        - mkfs
+
+    # Web 搜索工具
+    web-search:
+      enabled: false
+      provider: brave
+      api-key: ${BRAVE_API_KEY:}
+      max-results: 5
+
+# Spring Boot 配置
+spring:
+  application:
+    name: nanobot
+
+  # Spring AI Zhipu 配置
+  ai:
+    model:
+      chat: zhipuai
+    zhipuai:
+      api-key: ${ZHIPUAI_API_KEY:}
+      base-url: https://open.bigmodel.cn/api/paas
+      chat:
+        options:
+          model: glm-4-flash
+          temperature: 0.7
+
+  # Web 配置
+  web:
+    resources:
+      static-locations: classpath:/static/
+
+  # 文件上传配置
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+# 日志配置
+logging:
+  level:
+    root: INFO
+    org.nanobot: DEBUG
+    reactor.netty: INFO
+
+  pattern:
+    console: '%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n'
+
+# 服务器配置
+server:
+  port: 8080
+  shutdown: graceful
+
+# Actuator 配置
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
