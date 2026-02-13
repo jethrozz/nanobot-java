@@ -1,7 +1,10 @@
 package org.nanobot.config;
 
 import lombok.Data;
+import lombok.Getter;
+import lombok.Setter;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Bean;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -82,5 +85,10 @@ public class ChannelsConfig {
         private boolean enabled = false;
         private String botToken;
         private List<Long> allowFrom = new ArrayList<>();
+    }
+
+    @Bean
+    public FeishuConfig feishuConfig() {
+        return this.feishu;
     }
 }

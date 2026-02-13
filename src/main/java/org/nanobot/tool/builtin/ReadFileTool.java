@@ -99,9 +99,10 @@ public class ReadFileTool implements Tool {
      */
     private File resolveFile(String path) {
         File workspace = new File(toolsConfig.getWorkspace());
-        if (path.startsWith("/")) {
-            // 绝对路径
-            return new File(path);
+        File file = new File(path);
+        if (file.isAbsolute()) {
+            // 绝对路径 (支持 Windows 驱动器路径和 Unix 风格路径)
+            return file;
         } else {
             // 相对路径，相对于工作区
             return new File(workspace, path);

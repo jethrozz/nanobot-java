@@ -90,6 +90,13 @@
             <version>4.12.0</version>
         </dependency>
 
+        <!-- Feishu/Lark SDK -->
+        <dependency>
+            <groupId>com.larksuite.oapi</groupId>
+            <artifactId>oapi-sdk</artifactId>
+            <version>2.4.22</version>
+        </dependency>
+
         <!-- Logging -->
         <dependency>
             <groupId>ch.qos.logback</groupId>

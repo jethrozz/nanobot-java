@@ -2,28 +2,27 @@ package org.nanobot.channel.feishu;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.lark.oapi.event.EventDispatcher;
+import com.lark.oapi.service.im.ImService;
+import com.lark.oapi.service.im.v1.enums.MsgTypeEnum;
+import com.lark.oapi.service.im.v1.enums.ReceiveIdTypeEnum;
+import com.lark.oapi.service.im.v1.model.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.nanobot.config.ChannelsConfig.FeishuConfig;
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.RequestBody;
-import okhttp3.Response;
 import org.nanobot.bus.MessageBus;
 import org.nanobot.channel.Channel;
+import org.nanobot.config.ChannelsConfig.FeishuConfig;
 import org.nanobot.model.Message;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
-import java.io.IOException;
+import jakarta.annotation.PreDestroy;
 import java.time.Instant;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 /**
- * 飞书频道实现
+ * Feishu Channel using Official SDK with WebSocket Long Connection
  */
 @Slf4j
 @Component
@@ -31,13 +30,12 @@ import java.util.UUID;
 @ConditionalOnProperty(name = "nanobot.channels.feishu.enabled", havingValue = "true")
 public class FeishuChannel implements Channel {
 
-    private final FeishuConfig config;
+    private final FeishuConfig feishuConfig;
     private final MessageBus messageBus;
-    private final OkHttpClient httpClient;
     private final ObjectMapper objectMapper;
 
-    private String tenantAccessToken;
-    private Instant tokenExpireTime;
+    private com.lark.oapi.ws.Client wsClient;  // WebSocket client for receiving events
+    private com.lark.oapi.Client apiClient; // HTTP client for sending messages
 
     @Override
     public String getType() {
@@ -46,24 +44,48 @@ public class FeishuChannel implements Channel {
 
     @Override
     public String getId() {
-        return "feishu-" + config.getAppId();
+        return "feishu-" + feishuConfig.getAppId();
     }
 
     @Override
     public boolean isEnabled() {
-        return config.isEnabled();
+        return feishuConfig.isEnabled();
     }
 
     @Override
     public Mono<Void> start() {
         return Mono.fromRunnable(() -> {
-            log.info("Starting Feishu channel for app: {}", config.getAppId());
+            try {
+                log.info("Starting Feishu channel for app: {}", feishuConfig.getAppId());
 
-            // 获取 tenant_access_token
-            refreshTenantToken();
+                // Initialize HTTP API client for sending messages
+                apiClient = com.lark.oapi.Client.newBuilder(feishuConfig.getAppId(), feishuConfig.getAppSecret())
+                        .build();
 
-            // TODO: 启动 WebSocket 长连接或启动轮询服务
-            log.info("Feishu channel started");
+                // Create Event Dispatcher with P2MessageReceiveV1 handler
+                EventDispatcher eventDispatcher = EventDispatcher.newBuilder("", "")  // Empty strings for WebSocket mode
+                        .onP2MessageReceiveV1(new ImService.P2MessageReceiveV1Handler() {
+                            @Override
+                            public void handle(P2MessageReceiveV1 event) throws Exception {
+                                log.debug("Received P2MessageReceiveV1 event");
+                                handleIncomingMessage(event);
+                            }
+                        })
+                        .build();
+
+                // Initialize WebSocket client with event handler
+                wsClient = new com.lark.oapi.ws.Client.Builder(feishuConfig.getAppId(), feishuConfig.getAppSecret())
+                        .eventHandler(eventDispatcher)
+                        .build();
+
+                // Start WebSocket connection
+                wsClient.start();
+
+                log.info("Feishu channel started with WebSocket connection");
+            } catch (Exception e) {
+                log.error("Failed to start Feishu channel", e);
+                throw new RuntimeException(e);
+            }
         });
     }
 
@@ -71,168 +93,150 @@ public class FeishuChannel implements Channel {
     public Mono<Void> stop() {
         return Mono.fromRunnable(() -> {
             log.info("Stopping Feishu channel");
-            // TODO: 清理资源
+            wsClient = null;
+            apiClient = null;
         });
+    }
+
+    @PreDestroy
+    public void destroy() {
+        stop().subscribe();
     }
 
     @Override
     public Mono<Void> sendMessage(Message message) {
         return Mono.fromCallable(() -> {
             try {
-                // 发送消息到飞书
                 sendFeishuMessage(message.getUserId(), message.getContent());
                 return null;
             } catch (Exception e) {
                 log.error("Failed to send Feishu message", e);
-                throw e;
+                throw new RuntimeException(e);
             }
         });
     }
 
     /**
-     * 刷新 tenant_access_token
+     * Send Feishu message using SDK
      */
-    private void refreshTenantToken() {
-        try {
-            Map<String, String> requestBody = new HashMap<>();
-            requestBody.put("app_id", config.getAppId());
-            requestBody.put("app_secret", config.getAppSecret());
-
-            String jsonBody = objectMapper.writeValueAsString(requestBody);
-
-            Request request = new Request.Builder()
-                    .url("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
-                    .post(RequestBody.create(jsonBody, okhttp3.MediaType.parse("application/json")))
-                    .build();
-
-            try (Response response = httpClient.newCall(request).execute()) {
-                if (response.isSuccessful() && response.body() != null) {
-                    String responseBody = response.body().string();
-                    JsonNode jsonNode = objectMapper.readTree(responseBody);
-
-                    if (jsonNode.has("code") && jsonNode.get("code").asInt() == 0) {
-                        this.tenantAccessToken = jsonNode.get("tenant_access_token").asText();
-                        int expire = jsonNode.get("expire").asInt();
-                        this.tokenExpireTime = Instant.now().plusSeconds(expire - 300); // 提前5分钟刷新
-
-                        log.info("Successfully obtained Feishu tenant_access_token");
-                    } else {
-                        log.error("Failed to get tenant_access_token: {}", responseBody);
-                    }
-                }
-            }
-        } catch (IOException e) {
-            log.error("Error refreshing tenant token", e);
-        }
-    }
-
-    /**
-     * 发送飞书消息
-     */
-    private void sendFeishuMessage(String receiveId, String content) throws IOException {
-        if (tenantAccessToken == null || tokenExpireTime == null || Instant.now().isAfter(tokenExpireTime)) {
-            refreshTenantToken();
+    private void sendFeishuMessage(String receiveId, String content) throws Exception {
+        if (apiClient == null) {
+            log.warn("API Client not initialized");
+            return;
         }
 
-        Map<String, Object> messageBody = new HashMap<>();
-        messageBody.put("msg_type", "text");
-        messageBody.put("receive_id_type", "open_id");
-        messageBody.put("receive_id", receiveId);
-        messageBody.put("content", objectMapper.writeValueAsString(Map.of("text", content)));
+        // Build text message content as JSON string
+        String messageContent = "{\"text\":\"" + content.replace("\"", "\\\"") + "\"}";
 
-        String jsonBody = objectMapper.writeValueAsString(messageBody);
-
-        Request request = new Request.Builder()
-                .url("https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id")
-                .addHeader("Authorization", "Bearer " + tenantAccessToken)
-                .post(RequestBody.create(jsonBody, okhttp3.MediaType.parse("application/json")))
+        // Create message request using SDK builder
+        CreateMessageReq req = CreateMessageReq.newBuilder()
+                .receiveIdType(ReceiveIdTypeEnum.OPEN_ID.getValue())
+                .createMessageReqBody(CreateMessageReqBody.newBuilder()
+                        .receiveId(receiveId)
+                        .msgType(MsgTypeEnum.MSG_TYPE_TEXT.getValue())
+                        .content(messageContent)
+                        .build())
                 .build();
 
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (response.isSuccessful() && response.body() != null) {
-                log.info("Successfully sent Feishu message: {}", response.body().string());
-            } else {
-                log.error("Failed to send Feishu message: {}", response.code());
-            }
+        // Send message via SDK
+        CreateMessageResp resp = apiClient.im().message().create(req);
+
+        if (resp.getCode() == 0) {
+            log.info("Successfully sent Feishu message, requestId: {}", resp.getRequestId());
+        } else {
+            log.error("Failed to send Feishu message: code={}, msg={}",
+                    resp.getCode(), resp.getMsg());
         }
     }
 
     /**
-     * 处理接收到的飞书消息
+     * Handle incoming P2MessageReceiveV1 event
      */
-    public void handleIncomingMessage(JsonNode event) {
+    private void handleIncomingMessage(P2MessageReceiveV1 event) {
         try {
-            String eventType = event.get("type").asText();
-
-            if ("im.message.receive_v1".equals(eventType)) {
-                JsonNode message = event.get("message");
-                String chatId = message.get("chat_id").asText();
-                String messageId = message.get("message_id").asText();
-
-                // 获取消息内容
-                String content = getMessageContent(message);
-
-                // 创建内部消息
-                Message msg = Message.builder()
-                        .id(UUID.randomUUID().toString())
-                        .channelType(getType())
-                        .userId(chatId)  // 使用 chat_id 作为 user_id
-                        .content(content)
-                        .type(Message.MessageType.TEXT)
-                        .timestamp(Instant.now())
-                        .build();
-
-                // 权限检查
-                if (!isAuthorized(msg)) {
-                    log.warn("Unauthorized user: {}", msg.getUserId());
-                    return;
-                }
-
-                // 发布到消息总线
-                messageBus.publishInbound(msg).subscribe();
+            // Get event data
+            P2MessageReceiveV1Data eventData = event.getEvent();
+            if (eventData == null) {
+                log.warn("Event data is null");
+                return;
             }
+
+            // Get sender info - EventSender has getSenderId() which returns UserId
+            EventSender sender = eventData.getSender();
+            String senderId = null;
+            if (sender != null && sender.getSenderId() != null) {
+                senderId = sender.getSenderId().getOpenId(); // Use open_id
+            }
+
+            // Get message info - EventMessage has chatId, messageId, content
+            EventMessage messageData = eventData.getMessage();
+            String chatId = null;
+            String messageId = null;
+            String content = "";
+
+            if (messageData != null) {
+                chatId = messageData.getChatId();
+                messageId = messageData.getMessageId();
+                content = extractTextContent(messageData);
+            }
+
+            // Create internal message
+            Map<String, Object> metadata = new HashMap<>();
+            if (chatId != null) {
+                metadata.put("chat_id", chatId);
+            }
+            if (messageId != null) {
+                metadata.put("message_id", messageId);
+            }
+
+            Message msg = Message.builder()
+                    .id(UUID.randomUUID().toString())
+                    .channelType(getType())
+                    .userId(senderId != null ? senderId : chatId)
+                    .content(content)
+                    .type(Message.MessageType.TEXT)
+                    .metadata(metadata)
+                    .timestamp(Instant.now())
+                    .build();
+
+            // Authorization check
+            if (!isAuthorized(msg)) {
+                log.warn("Unauthorized user: {}", msg.getUserId());
+                return;
+            }
+
+            // Publish to message bus
+            messageBus.publishInbound(msg).subscribe();
+
         } catch (Exception e) {
             log.error("Error handling incoming Feishu message", e);
         }
     }
 
     /**
-     * 获取消息内容
+     * Extract text content from EventMessage
      */
-    private String getMessageContent(JsonNode message) throws IOException {
-        String messageId = message.get("message_id").asText();
-
-        Request request = new Request.Builder()
-                .url("https://open.feishu.cn/open-apis/im/v1/messages/" + messageId)
-                .addHeader("Authorization", "Bearer " + tenantAccessToken)
-                .get()
-                .build();
-
-        try (Response response = httpClient.newCall(request).execute()) {
-            if (response.isSuccessful() && response.body() != null) {
-                JsonNode jsonNode = objectMapper.readTree(response.body().string());
-                if (jsonNode.has("code") && jsonNode.get("code").asInt() == 0) {
-                    JsonNode data = jsonNode.get("data");
-                    String content = data.get("body").get("content").asText();
-
-                    // 解析 content JSON
-                    JsonNode contentJson = objectMapper.readTree(content);
-                    if (contentJson.has("text")) {
-                        return contentJson.get("text").asText();
-                    }
-                }
-            }
+    private String extractTextContent(EventMessage messageData) {
+        if (messageData == null || messageData.getContent() == null) {
+            return "";
         }
-
+        try {
+            JsonNode json = objectMapper.readTree(messageData.getContent());
+            if (json.has("text")) {
+                return json.get("text").asText();
+            }
+        } catch (Exception e) {
+            log.debug("Failed to extract text content", e);
+        }
         return "";
     }
 
     /**
-     * 检查用户是否已授权
+     * Check if user is authorized
      */
     private boolean isAuthorized(Message message) {
-        // 空列表表示允许所有用户
-        return config.getAuthorizedUsers().isEmpty() ||
-                config.getAuthorizedUsers().contains(message.getUserId());
+        // Empty list means allow all users
+        return feishuConfig.getAuthorizedUsers().isEmpty() ||
+                feishuConfig.getAuthorizedUsers().contains(message.getUserId());
     }
 }
